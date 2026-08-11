@@ -46,7 +46,7 @@ async function getZoomAccessToken() {
     }
 }
 
-// مسار إنشاء الاجتماع
+// مسار إنشاء الاجتماع (معدل ليرسل meeting_number بالشكل الصحيح)
 app.post('/api/create-meeting', async (req, res) => {
     try {
         const { topic, start_time, duration } = req.body;
@@ -73,15 +73,26 @@ app.post('/api/create-meeting', async (req, res) => {
             }
         );
 
-        res.status(200).json(response.data);
+        const meeting = response.data;
+
+        // إرجاع البيانات بالشكل الذي يطلبه موقعك وقاعدة البيانات لتجنب خطأ null value
+        res.status(200).json({
+            success: true,
+            meeting_number: meeting.id.toString(), // تحويل الـ id إلى meeting_number بـ string
+            join_url: meeting.join_url,
+            password: meeting.password || '',
+            start_time: meeting.start_time,
+            topic: meeting.topic
+        });
+
     } catch (error) {
         console.error('Error creating meeting:', error.response?.data || error.message);
         res.status(500).json({ error: 'Failed to create meeting' });
     }
 });
 
-// الاعتماد على منفذ Railway أو المنفذ 8080 افتراضياً، مع ربط بـ 0.0.0.0
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, '0.0.0.0', () => {
+// الاعتماد على المنفذ تلقائياً
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
