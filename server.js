@@ -80,8 +80,8 @@ app.post('/api/create-meeting', async (req, res) => {
     }
 });
 
-// الاعتماد على منفذ Railway تلقائياً أو المنفذ 4000 محلياً
-const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
+// الاعتماد على منفذ Railway أو المنفذ 8080 افتراضياً، مع ربط بـ 0.0.0.0
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
 });
