@@ -1,7 +1,6 @@
 {
   "name": "zoom-backend",
   "version": "1.0.0",
-  "description": "خادم وسيط لإنشاء اجتماعات Zoom باستخدام OAuth",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
