@@ -1,11 +1,11 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const KJUR = require('jsrsasign'); // مكتبة لتوليد Signature لـ Zoom SDK
 require('dotenv').config();
 
 const app = express();
 
-// إعدادات الـ CORS المخصصة لربطه مع موقعك على Vercel والمحلي
 const corsOptions = {
     origin: ['https://read-and-rise-two.vercel.app', 'http://localhost:5173'],
     methods: ['GET', 'POST', 'OPTIONS'],
@@ -14,16 +14,15 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // دعم طلبات الفحص المسبق Pre-flight
+app.options('*', cors(corsOptions));
 
 app.use(express.json());
 
-// مسار فحص صحة السيرفر للتأكد من عمله
 app.get('/api/health', (req, res) => {
     res.status(200).json({ status: 'ok' });
 });
 
-// دالة لجلب رمز المصادقة من Zoom عبر Server-to-Server OAuth
+// دالة لجلب رمز المصادقة من Zoom
 async function getZoomAccessToken() {
     try {
         const credentials = Buffer.from(
@@ -46,7 +45,40 @@ async function getZoomAccessToken() {
     }
 }
 
-// مسار إنشاء الاجتماع (معدل ليرسل meeting_number بالشكل الصحيح)
+// 1. مسار توليد التوقيع الرقمي (Zoom SDK Signature)
+app.post('/api/generate-signature', (req, res) => {
+    try {
+        const { meetingNumber, role } = req.body; // role: 0 للطالب، 1 للمعلم
+
+        const iat = Math.floor(Date.now() / 1000) - 30;
+        const exp = iat + 60 * 60 * 2; // صلاحية التوقيع ساعتان
+
+        const oHeader = { alg: 'HS256', typ: 'JWT' };
+        const oPayload = {
+            sdkKey: process.env.ZOOM_SDK_KEY,
+            mn: meetingNumber,
+            role: role || 0,
+            iat: iat,
+            exp: exp,
+            appKey: process.env.ZOOM_SDK_KEY,
+            tokenExp: exp
+        };
+
+        const sHeader = JSON.stringify(oHeader);
+        const sPayload = JSON.stringify(oPayload);
+        const signature = KJUR.jws.JWS.sign("HS256", sHeader, sPayload, process.env.ZOOM_SDK_SECRET);
+
+        res.status(200).json({
+            signature: signature,
+            sdkKey: process.env.ZOOM_SDK_KEY
+        });
+    } catch (error) {
+        console.error('Error generating signature:', error);
+        res.status(500).json({ error: 'Failed to generate signature' });
+    }
+});
+
+// 2. مسار إنشاء الاجتماع
 app.post('/api/create-meeting', async (req, res) => {
     try {
         const { topic, start_time, duration } = req.body;
@@ -56,7 +88,7 @@ app.post('/api/create-meeting', async (req, res) => {
             'https://api.zoom.us/v2/users/me/meetings',
             {
                 topic: topic || 'Read and Rise Meeting',
-                type: 2, // Scheduled meeting
+                type: 2,
                 start_time: start_time,
                 duration: duration || 30,
                 settings: {
@@ -73,25 +105,13 @@ app.post('/api/create-meeting', async (req, res) => {
             }
         );
 
-        const meeting = response.data;
-
-        // إرجاع البيانات بالشكل الذي يطلبه موقعك وقاعدة البيانات لتجنب خطأ null value
-        res.status(200).json({
-            success: true,
-            meeting_number: meeting.id.toString(), // تحويل الـ id إلى meeting_number بـ string
-            join_url: meeting.join_url,
-            password: meeting.password || '',
-            start_time: meeting.start_time,
-            topic: meeting.topic
-        });
-
+        res.status(200).json(response.data);
     } catch (error) {
         console.error('Error creating meeting:', error.response?.data || error.message);
         res.status(500).json({ error: 'Failed to create meeting' });
     }
 });
 
-// الاعتماد على المنفذ تلقائياً
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
