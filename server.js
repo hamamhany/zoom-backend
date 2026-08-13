@@ -1,133 +1,154 @@
-const express = require('express');
-const cors = require('cors');
-const axios = require('axios');
-const KJUR = require('jsrsasign'); // مكتبة لتوليد Signature لـ Zoom SDK
-require('dotenv').config();
+import React, { useEffect, useRef, useState } from 'react';
+import ZoomMtgEmbedded from '@zoom/meetingsdk/embedded';
 
-const app = express();
+const ZoomMeetingModal = ({ isOpen, onClose, meetingDetails, userName, userEmail }) => {
+  const zoomContainerRef = useRef(null);
+  const clientRef = useRef(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
-const corsOptions = {
-    origin: ['https://read-and-rise-two.vercel.app', 'http://localhost:5173'],
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials: true
-};
+  useEffect(() => {
+    if (!isOpen || !meetingDetails) return;
 
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
+    let isMounted = true;
 
-app.use(express.json());
+    const initAndJoinZoom = async () => {
+      setLoading(true);
+      setError(null);
 
-app.get('/api/health', (req, res) => {
-    res.status(200).json({ status: 'ok' });
-});
-
-// دالة لجلب رمز المصادقة من Zoom
-async function getZoomAccessToken() {
-    try {
-        const credentials = Buffer.from(
-            `${process.env.ZOOM_CLIENT_ID}:${process.env.ZOOM_CLIENT_SECRET}`
-        ).toString('base64');
-
-        const response = await axios.post(
-            `https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${process.env.ZOOM_ACCOUNT_ID}`,
-            {},
-            {
-                headers: {
-                    Authorization: `Basic ${credentials}`
-                }
-            }
-        );
-        return response.data.access_token;
-    } catch (error) {
-        console.error('Error getting Zoom access token:', error.response?.data || error.message);
-        throw new Error('Failed to authenticate with Zoom');
-    }
-}
-
-// 1. مسار توليد التوقيع الرقمي (Zoom SDK Signature)
-app.post('/api/generate-signature', (req, res) => {
-    try {
-        const { meetingNumber, role } = req.body; // role: 0 للطالب، 1 للمعلم
-
-        // تنظيف رقم الاجتماع من أي مسافات أو رموز غير رقمية وتحويله لنص صريح
-        const cleanMeetingNumber = String(meetingNumber || '').replace(/\D/g, '');
+      try {
+        // 1. تنقية رقم الاجتماع تحسباً لوجود مسافات أو رموز
+        const rawMeetingNumber = meetingDetails.meeting_number || meetingDetails.id || meetingDetails.meetingNumber;
+        const cleanMeetingNumber = String(rawMeetingNumber || '').replace(/\D/g, '');
 
         if (!cleanMeetingNumber) {
-            return res.status(400).json({ error: 'Meeting number is required and must be valid' });
+          throw new Error('رقم الاجتماع غير صالح أو غير موجود.');
         }
 
-        const clientId = process.env.ZOOM_CLIENT_ID || process.env.ZOOM_SDK_KEY;
-        const clientSecret = process.env.ZOOM_CLIENT_SECRET || process.env.ZOOM_SDK_SECRET;
-
-        const iat = Math.floor(Date.now() / 1000) - 30;
-        const exp = iat + 60 * 60 * 2; // صلاحية التوقيع ساعتان
-
-        const oHeader = { alg: 'HS256', typ: 'JWT' };
+        // 2. طلب التوقيع الرقمي من السيرفر (Backend)
+        // قم بتعديل رابط الـ API بحسب بيئة تشغيل السيرفر لديك (مثلاً Vercel أو localhost)
+        const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
         
-        // استخدام appKey و iss مع Client ID المتوافق مع الإصدارات الحديثة لـ Zoom SDK
-        const oPayload = {
-            iss: clientId,
-            appKey: clientId,
-            sdkKey: clientId,
-            mn: cleanMeetingNumber,
-            role: role || 0,
-            iat: iat,
-            exp: exp,
-            tokenExp: exp
-        };
-
-        const sHeader = JSON.stringify(oHeader);
-        const sPayload = JSON.stringify(oPayload);
-        const signature = KJUR.jws.JWS.sign("HS256", sHeader, sPayload, clientSecret);
-
-        res.status(200).json({
-            signature: signature,
-            clientId: clientId,
-            sdkKey: clientId,
-            meetingNumber: cleanMeetingNumber
+        const response = await fetch(`${BACKEND_URL}/api/generate-signature`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            meetingNumber: cleanMeetingNumber,
+            role: 0 // 0 للطلاب/المشاركين، 1 للمضيف/المعلم
+          }),
         });
-    } catch (error) {
-        console.error('Error generating signature:', error);
-        res.status(500).json({ error: 'Failed to generate signature' });
-    }
-});
 
-// 2. مسار إنشاء الاجتماع
-app.post('/api/create-meeting', async (req, res) => {
-    try {
-        const { topic, start_time, duration } = req.body;
-        const accessToken = await getZoomAccessToken();
+        const data = await response.json();
 
-        const response = await axios.post(
-            'https://api.zoom.us/v2/users/me/meetings',
-            {
-                topic: topic || 'Read and Rise Meeting',
-                type: 2,
-                start_time: start_time,
-                duration: duration || 30,
-                settings: {
-                    host_video: true,
-                    participant_video: true,
-                    waiting_room: false
-                }
-            },
-            {
-                headers: {
-                    Authorization: `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
+        if (!response.ok || !data.signature) {
+          throw new Error(data.error || 'لم يتم استلام توقيع صالح من الخادم');
+        }
 
-        res.status(200).json(response.data);
-    } catch (error) {
-        console.error('Error creating meeting:', error.response?.data || error.message);
-        res.status(500).json({ error: 'Failed to create meeting' });
-    }
-});
+        if (!isMounted) return;
 
-const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+        // 3. تهيئة عميل Zoom Embedded SDK
+        const client = ZoomMtgEmbedded.createClient();
+        clientRef.current = client;
+
+        await client.init({
+          zoomAppRoot: zoomContainerRef.current,
+          language: 'ar-AR',
+          patchJsMedia: true
+        });
+
+        // 4. الانضمام للاجتماع باستخدام التوقيع والـ Client ID
+        const activeClientId = data.clientId || data.sdkKey || import.meta.env.VITE_ZOOM_SDK_KEY;
+
+        await client.join({
+          clientId: activeClientId,
+          signature: data.signature,
+          meetingNumber: cleanMeetingNumber,
+          password: meetingDetails.password || "",
+          userName: userName || "مستخدم",
+          userEmail: userEmail || `${userName || 'user'}@readandrise.com`
+        });
+
+        console.log("تم الانضمام للاجتماع بنجاح!");
+      } catch (err) {
+        console.error("خطأ أثناء التهيئة أو الانضمام للاجتماع:", err);
+        if (isMounted) {
+          setError(err.message || 'حدث خطأ أثناء الاتصال باجتماع Zoom');
+        }
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    };
+
+    initAndJoinZoom();
+
+    // تنظيف الموارد عند إغلاق المودال أو الخروج
+    return () => {
+      isMounted = false;
+      if (clientRef.current) {
+        try {
+          clientRef.current.destroy();
+        } catch (e) {
+          console.warn("تنبيه أثناء إغلاق جلسة Zoom:", e);
+        }
+      }
+    };
+  }, [isOpen, meetingDetails, userName, userEmail]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-75 p-4">
+      <div className="relative w-full max-w-5xl h-[85vh] bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col">
+        
+        {/* شريط العنوان والأزرار */}
+        <div className="flex justify-between items-center px-6 py-4 bg-gray-900 text-white">
+          <h3 className="text-lg font-bold">
+            {meetingDetails?.topic || 'اجتماع Zoom Direct'}
+          </h3>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-white text-2xl font-bold transition-colors"
+          >
+            &times;
+          </button>
+        </div>
+
+        {/* حاوية العرض وإرشادات التحميل والخطأ */}
+        <div className="relative flex-1 w-full h-full bg-gray-100">
+          {loading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-90 z-10">
+              <div className="text-center">
+                <div className="inline-block animate-spin rounded-full h-10 w-10 border-4 border-blue-600 border-t-transparent"></div>
+                <p className="mt-3 text-gray-700 font-medium">جاري الاتصال بقاعة الاجتماع...</p>
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="absolute inset-0 flex items-center justify-center bg-white p-6 z-10">
+              <div className="text-center max-w-md">
+                <div className="text-red-500 text-5xl mb-3">⚠️</div>
+                <h4 className="text-lg font-bold text-gray-800 mb-2">فشل الانضمام للاجتماع</h4>
+                <p className="text-sm text-gray-600 mb-4">{error}</p>
+                <button
+                  onClick={onClose}
+                  className="px-5 py-2 bg-gray-800 text-white text-sm rounded-lg hover:bg-gray-700 transition-colors"
+                >
+                  إغلاق
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* الحاوية المخصصة لـ Zoom SDK */}
+          <div ref={zoomContainerRef} className="w-full h-full" />
+        </div>
+
+      </div>
+    </div>
+  );
+};
+
+export default ZoomMeetingModal;
