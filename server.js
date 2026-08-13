@@ -22,27 +22,6 @@ app.get('/api/health', (req, res) => {
     res.status(200).json({ status: 'ok' });
 });
 
-// دالة مساعدة لتوليد Zoom SDK Signature
-function generateSdkSignature(meetingNumber, role = 0) {
-    const iat = Math.floor(Date.now() / 1000) - 30;
-    const exp = iat + 60 * 60 * 2; // صلاحية التوقيع ساعتان
-
-    const oHeader = { alg: 'HS256', typ: 'JWT' };
-    const oPayload = {
-        sdkKey: process.env.ZOOM_SDK_KEY,
-        mn: meetingNumber,
-        role: role,
-        iat: iat,
-        exp: exp,
-        appKey: process.env.ZOOM_SDK_KEY,
-        tokenExp: exp
-    };
-
-    const sHeader = JSON.stringify(oHeader);
-    const sPayload = JSON.stringify(oPayload);
-    return KJUR.jws.JWS.sign("HS256", sHeader, sPayload, process.env.ZOOM_SDK_SECRET);
-}
-
 // دالة لجلب رمز المصادقة من Zoom
 async function getZoomAccessToken() {
     try {
@@ -66,20 +45,47 @@ async function getZoomAccessToken() {
     }
 }
 
-// 1. مسار توليد التوقيع الرقمي (Zoom SDK Signature) منفصلاً
+// 1. مسار توليد التوقيع الرقمي (Zoom SDK Signature)
 app.post('/api/generate-signature', (req, res) => {
     try {
         const { meetingNumber, role } = req.body; // role: 0 للطالب، 1 للمعلم
 
-        if (!meetingNumber) {
-            return res.status(400).json({ error: 'meetingNumber is required' });
+        // تنظيف رقم الاجتماع من أي مسافات أو رموز غير رقمية وتحويله لنص صريح
+        const cleanMeetingNumber = String(meetingNumber || '').replace(/\D/g, '');
+
+        if (!cleanMeetingNumber) {
+            return res.status(400).json({ error: 'Meeting number is required and must be valid' });
         }
 
-        const signature = generateSdkSignature(meetingNumber, role || 0);
+        const clientId = process.env.ZOOM_CLIENT_ID || process.env.ZOOM_SDK_KEY;
+        const clientSecret = process.env.ZOOM_CLIENT_SECRET || process.env.ZOOM_SDK_SECRET;
+
+        const iat = Math.floor(Date.now() / 1000) - 30;
+        const exp = iat + 60 * 60 * 2; // صلاحية التوقيع ساعتان
+
+        const oHeader = { alg: 'HS256', typ: 'JWT' };
+        
+        // استخدام appKey و iss مع Client ID المتوافق مع الإصدارات الحديثة لـ Zoom SDK
+        const oPayload = {
+            iss: clientId,
+            appKey: clientId,
+            sdkKey: clientId,
+            mn: cleanMeetingNumber,
+            role: role || 0,
+            iat: iat,
+            exp: exp,
+            tokenExp: exp
+        };
+
+        const sHeader = JSON.stringify(oHeader);
+        const sPayload = JSON.stringify(oPayload);
+        const signature = KJUR.jws.JWS.sign("HS256", sHeader, sPayload, clientSecret);
 
         res.status(200).json({
             signature: signature,
-            sdkKey: process.env.ZOOM_SDK_KEY
+            clientId: clientId,
+            sdkKey: clientId,
+            meetingNumber: cleanMeetingNumber
         });
     } catch (error) {
         console.error('Error generating signature:', error);
@@ -87,10 +93,10 @@ app.post('/api/generate-signature', (req, res) => {
     }
 });
 
-// 2. مسار إنشاء الاجتماع (الآن يرجع الـ signature بنفس الاستجابة!)
+// 2. مسار إنشاء الاجتماع
 app.post('/api/create-meeting', async (req, res) => {
     try {
-        const { topic, start_time, duration, role } = req.body;
+        const { topic, start_time, duration } = req.body;
         const accessToken = await getZoomAccessToken();
 
         const response = await axios.post(
@@ -114,16 +120,7 @@ app.post('/api/create-meeting', async (req, res) => {
             }
         );
 
-        const meetingData = response.data;
-
-        // 💡 حل المشكلة: توليد التوقيع وإضافته لبيانات الاجتماع المنشأ
-        const signature = generateSdkSignature(meetingData.id, role || 1);
-
-        res.status(200).json({
-            ...meetingData,
-            signature: signature, // 👈 أصبح يحتوي على التوقيع الآن
-            sdkKey: process.env.ZOOM_SDK_KEY
-        });
+        res.status(200).json(response.data);
     } catch (error) {
         console.error('Error creating meeting:', error.response?.data || error.message);
         res.status(500).json({ error: 'Failed to create meeting' });
