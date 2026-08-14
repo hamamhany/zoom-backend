@@ -13,7 +13,7 @@ const corsOptions = {
         'http://localhost:5173',
         'http://localhost:3000'
     ],
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true
 };
@@ -24,7 +24,11 @@ app.use(express.json());
 
 // ------------------- Health Check -------------------
 app.get('/api/health', (req, res) => {
-    res.status(200).json({ status: 'ok' });
+    res.status(200).json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || 'development'
+    });
 });
 
 // ------------------- Zoom Access Token -------------------
@@ -50,58 +54,56 @@ async function getZoomAccessToken() {
     }
 }
 
-// ------------------- 1. Generate Zoom Signature -------------------
+// ------------------- دالة توليد التوقيع (موحدة) -------------------
+function generateZoomSignature(meetingNumber, role = 0) {
+    const clientId = process.env.ZOOM_CLIENT_ID || process.env.ZOOM_SDK_KEY;
+    const clientSecret = process.env.ZOOM_CLIENT_SECRET || process.env.ZOOM_SDK_SECRET;
+
+    if (!clientId || !clientSecret) {
+        throw new Error('Missing Zoom credentials for signature generation');
+    }
+
+    const cleanMeetingNumber = String(meetingNumber || '').replace(/\D/g, '');
+    if (!cleanMeetingNumber) {
+        throw new Error('Invalid meeting number');
+    }
+
+    const iat = Math.floor(Date.now() / 1000) - 30;
+    const exp = iat + 60 * 60 * 2; // صلاحية ساعتين
+
+    const oHeader = { alg: 'HS256', typ: 'JWT' };
+    const oPayload = {
+        appKey: clientId,      // مطلوب في الإصدارات الجديدة من Zoom SDK
+        iat: iat,
+        exp: exp,
+        tokenExp: exp,
+        mn: cleanMeetingNumber,
+        role: role || 0        // 0 = مضيف, 1 = مشارك
+    };
+
+    const sHeader = JSON.stringify(oHeader);
+    const sPayload = JSON.stringify(oPayload);
+    return KJUR.jws.JWS.sign("HS256", sHeader, sPayload, clientSecret);
+}
+
+// ------------------- 1. توليد التوقيع فقط -------------------
 app.post('/api/generate-signature', (req, res) => {
     try {
         const { meetingNumber, role } = req.body;
-
-        const cleanMeetingNumber = String(meetingNumber || '').replace(/\D/g, '');
-
-        if (!cleanMeetingNumber) {
-            return res.status(400).json({ error: 'Meeting number is required and must be valid' });
-        }
-
-        // استخدام المفاتيح من البيئة (نفس مفاتيح Zoom المستخدمة للـ OAuth)
-        const clientId = process.env.ZOOM_CLIENT_ID || process.env.ZOOM_SDK_KEY;
-        const clientSecret = process.env.ZOOM_CLIENT_SECRET || process.env.ZOOM_SDK_SECRET;
-
-        if (!clientId || !clientSecret) {
-            console.error('Missing Zoom credentials for signature generation');
-            return res.status(500).json({ error: 'Server configuration error: missing Zoom credentials' });
-        }
-
-        const iat = Math.floor(Date.now() / 1000) - 30;
-        const exp = iat + 60 * 60 * 2; // صلاحية ساعتين
-
-        const oHeader = { alg: 'HS256', typ: 'JWT' };
-        const oPayload = {
-            iss: clientId,
-            appKey: clientId,
-            sdkKey: clientId,
-            mn: cleanMeetingNumber,
-            role: role || 0,
-            iat: iat,
-            exp: exp,
-            tokenExp: exp
-        };
-
-        const sHeader = JSON.stringify(oHeader);
-        const sPayload = JSON.stringify(oPayload);
-        const signature = KJUR.jws.JWS.sign("HS256", sHeader, sPayload, clientSecret);
+        const signature = generateZoomSignature(meetingNumber, role || 0);
 
         res.status(200).json({
             signature: signature,
-            clientId: clientId,
-            sdkKey: clientId,
-            meetingNumber: cleanMeetingNumber
+            sdkKey: process.env.ZOOM_CLIENT_ID || process.env.ZOOM_SDK_KEY,
+            meetingNumber: String(meetingNumber).replace(/\D/g, '')
         });
     } catch (error) {
-        console.error('Error generating signature:', error);
-        res.status(500).json({ error: 'Failed to generate signature' });
+        console.error('❌ Error generating signature:', error);
+        res.status(500).json({ error: error.message || 'Failed to generate signature' });
     }
 });
 
-// ------------------- 2. Create Zoom Meeting -------------------
+// ------------------- 2. إنشاء اجتماع جديد مع التوقيع -------------------
 app.post('/api/create-meeting', async (req, res) => {
     try {
         const { topic, start_time, duration, classId, teacherId } = req.body;
@@ -149,47 +151,22 @@ app.post('/api/create-meeting', async (req, res) => {
 
         const meetingData = response.data;
 
-        // ✅ توليد التوقيع للاجتماع (مباشرة بعد الإنشاء)
-        const cleanMeetingNumber = String(meetingData.id || '').replace(/\D/g, '');
-        const clientId = process.env.ZOOM_CLIENT_ID || process.env.ZOOM_SDK_KEY;
-        const clientSecret = process.env.ZOOM_CLIENT_SECRET || process.env.ZOOM_SDK_SECRET;
-
+        // ✅ توليد التوقيع باستخدام الدالة الموحدة
         let signature = '';
-        if (clientId && clientSecret && cleanMeetingNumber) {
-            try {
-                const iat = Math.floor(Date.now() / 1000) - 30;
-                const exp = iat + 60 * 60 * 2;
-
-                const oHeader = { alg: 'HS256', typ: 'JWT' };
-                const oPayload = {
-                    iss: clientId,
-                    appKey: clientId,
-                    sdkKey: clientId,
-                    mn: cleanMeetingNumber,
-                    role: 0, // 0 = host
-                    iat: iat,
-                    exp: exp,
-                    tokenExp: exp
-                };
-
-                const sHeader = JSON.stringify(oHeader);
-                const sPayload = JSON.stringify(oPayload);
-                signature = KJUR.jws.JWS.sign("HS256", sHeader, sPayload, clientSecret);
-                console.log('✅ تم توليد التوقيع بنجاح');
-            } catch (sigError) {
-                console.error('❌ فشل توليد التوقيع:', sigError);
-                // نكمل بدون توقيع (سيظهر تحذير في الكود الأمامي)
-            }
-        } else {
-            console.warn('⚠️ مفاتيح Zoom غير مكتملة، لا يمكن توليد التوقيع');
+        try {
+            signature = generateZoomSignature(meetingData.id, 0); // 0 = مضيف
+            console.log('✅ تم توليد التوقيع بنجاح');
+        } catch (sigError) {
+            console.error('❌ فشل توليد التوقيع:', sigError.message);
+            // نكمل بدون توقيع (سيظهر تحذير في الكود الأمامي)
         }
 
         // ✅ إرجاع البيانات مع التوقيع
         res.status(200).json({
             ...meetingData,
             signature: signature,
-            sdkKey: clientId || '',
-            meetingNumber: cleanMeetingNumber
+            sdkKey: process.env.ZOOM_CLIENT_ID || process.env.ZOOM_SDK_KEY || '',
+            meetingNumber: String(meetingData.id || '').replace(/\D/g, '')
         });
 
     } catch (error) {
@@ -200,7 +177,40 @@ app.post('/api/create-meeting', async (req, res) => {
     }
 });
 
-// ------------------- 3. (اختياري) حذف الاجتماع -------------------
+// ------------------- 3. جلب قائمة الاجتماعات (اختياري) -------------------
+app.get('/api/get-meetings', async (req, res) => {
+    try {
+        const accessToken = await getZoomAccessToken();
+        const response = await axios.get(
+            'https://api.zoom.us/v2/users/me/meetings',
+            {
+                headers: {
+                    Authorization: `Bearer ${accessToken}`
+                },
+                params: {
+                    page_size: 30,
+                    type: 'scheduled'
+                }
+            }
+        );
+
+        // ✅ إضافة التوقيع لكل اجتماع إذا أردت
+        const meetings = response.data.meetings.map(meeting => {
+            let signature = '';
+            try {
+                signature = generateZoomSignature(meeting.id, 0);
+            } catch (e) { /* ignore */ }
+            return { ...meeting, signature };
+        });
+
+        res.status(200).json({ meetings });
+    } catch (error) {
+        console.error('❌ Error fetching meetings:', error.response?.data || error.message);
+        res.status(500).json({ error: 'Failed to fetch meetings' });
+    }
+});
+
+// ------------------- 4. حذف اجتماع -------------------
 app.delete('/api/delete-meeting/:meetingId', async (req, res) => {
     try {
         const { meetingId } = req.params;
@@ -215,10 +225,12 @@ app.delete('/api/delete-meeting/:meetingId', async (req, res) => {
             }
         );
 
-        res.status(200).json({ success: true });
+        res.status(200).json({ success: true, message: 'Meeting deleted successfully' });
     } catch (error) {
-        console.error('Error deleting meeting:', error.response?.data || error.message);
-        res.status(500).json({ error: 'Failed to delete meeting' });
+        console.error('❌ Error deleting meeting:', error.response?.data || error.message);
+        const status = error.response?.status || 500;
+        const message = error.response?.data?.message || error.message || 'Failed to delete meeting';
+        res.status(status).json({ error: message });
     }
 });
 
@@ -229,4 +241,6 @@ app.listen(PORT, () => {
     console.log(`✅ Health check: http://localhost:${PORT}/api/health`);
     console.log(`✅ Create meeting: POST http://localhost:${PORT}/api/create-meeting`);
     console.log(`✅ Generate signature: POST http://localhost:${PORT}/api/generate-signature`);
+    console.log(`✅ Get meetings: GET http://localhost:${PORT}/api/get-meetings`);
+    console.log(`✅ Delete meeting: DELETE http://localhost:${PORT}/api/delete-meeting/:meetingId`);
 });
