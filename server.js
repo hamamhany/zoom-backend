@@ -73,13 +73,14 @@ function generateZoomSignature(meetingNumber, role = 0) {
 
     // ✅ هيكل Payload المطلوب في Zoom SDK v4.0+
     const payload = {
-        sdkKey: sdkKey,           // المفتاح العام
-        appKey: sdkKey,           // ⚠️ هذا الحقل إجباري في الإصدار 4.0
-        mn: cleanMeetingNumber,   // رقم الاجتماع
-        role: role || 0,          // 0 = مضيف, 1 = مشارك
+        sdkKey: sdkKey,           
+        appKey: sdkKey,           
+        mn: cleanMeetingNumber,   
+        // ✅ تم تصحيح الأدوار: 1 = مضيف (المعلم), 0 = مشارك (الطالب)
+        role: parseInt(role, 10) === 1 ? 1 : 0, 
         iat: iat,
         exp: exp,
-        tokenExp: exp             // ⚠️ حقل إجباري أيضاً
+        tokenExp: exp             
     };
 
     const header = { alg: 'HS256', typ: 'JWT' };
@@ -93,7 +94,7 @@ function generateZoomSignature(meetingNumber, role = 0) {
 app.post('/api/generate-signature', (req, res) => {
     try {
         const { meetingNumber, role } = req.body;
-        const signature = generateZoomSignature(meetingNumber, role || 0);
+        const signature = generateZoomSignature(meetingNumber, role);
 
         res.status(200).json({
             signature: signature,
@@ -106,7 +107,7 @@ app.post('/api/generate-signature', (req, res) => {
     }
 });
 
-// ------------------- 2. إنشاء اجتماع جديد مع التوقيع -------------------
+// ------------------- 2. إنشاء اجتماع جديد -------------------
 app.post('/api/create-meeting', async (req, res) => {
     try {
         const { topic, start_time, duration, classId, teacherId } = req.body;
@@ -152,18 +153,10 @@ app.post('/api/create-meeting', async (req, res) => {
 
         const meetingData = response.data;
 
-        // ✅ توليد التوقيع باستخدام الدالة الموحدة (مع role = 0 للمضيف)
-        let signature = '';
-        try {
-            signature = generateZoomSignature(meetingData.id, 0);
-            console.log('✅ تم توليد التوقيع بنجاح');
-        } catch (sigError) {
-            console.error('❌ فشل توليد التوقيع:', sigError.message);
-        }
+        // ✅ تم إزالة توليد التوقيع من هنا (سيتم توليده في المتصفح لحظة الانضمام)
 
         res.status(200).json({
             ...meetingData,
-            signature: signature,
             sdkKey: process.env.ZOOM_CLIENT_ID || process.env.ZOOM_SDK_KEY || '',
             meetingNumber: String(meetingData.id || '').replace(/\D/g, '')
         });
@@ -194,11 +187,7 @@ app.get('/api/get-meetings', async (req, res) => {
         );
 
         const meetings = response.data.meetings.map(meeting => {
-            let signature = '';
-            try {
-                signature = generateZoomSignature(meeting.id, 0);
-            } catch (e) { /* ignore */ }
-            return { ...meeting, signature };
+            return { ...meeting };
         });
 
         res.status(200).json({ meetings });
