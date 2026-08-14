@@ -31,7 +31,7 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// ------------------- Zoom Access Token -------------------
+// ------------------- Zoom Access Token (OAuth) -------------------
 async function getZoomAccessToken() {
     try {
         const credentials = Buffer.from(
@@ -54,13 +54,13 @@ async function getZoomAccessToken() {
     }
 }
 
-// ------------------- دالة توليد التوقيع (متوافقة مع Zoom SDK v4.0+) -------------------
+// ------------------- توليد التوقيع (Meeting SDK) -------------------
 function generateZoomSignature(meetingNumber, role = 0) {
-    const sdkKey = process.env.ZOOM_CLIENT_ID || process.env.ZOOM_SDK_KEY;
-    const sdkSecret = process.env.ZOOM_CLIENT_SECRET || process.env.ZOOM_SDK_SECRET;
+    const sdkKey = process.env.ZOOM_SDK_KEY;
+    const sdkSecret = process.env.ZOOM_SDK_SECRET;
 
     if (!sdkKey || !sdkSecret) {
-        throw new Error('Missing Zoom credentials for signature generation');
+        throw new Error('Missing Zoom SDK credentials (ZOOM_SDK_KEY or ZOOM_SDK_SECRET)');
     }
 
     const cleanMeetingNumber = String(meetingNumber || '').replace(/\D/g, '');
@@ -68,14 +68,12 @@ function generateZoomSignature(meetingNumber, role = 0) {
         throw new Error('Invalid meeting number');
     }
 
-    // طرح 30 ثانية لتلافي مشاكل الفروقات البسيطة في توقيت الخوادم (Clock Skew)
-    const iat = Math.round(Date.now() / 1000) - 30;
+    const iat = Math.round(Date.now() / 1000) - 30; // لتلافي فرق التوقيت البسيط
     const exp = iat + 60 * 60 * 2; // صلاحية ساعتين
 
-    // ✅ هيكل Payload المحدث لمنع خطأ Signature is invalid (3712)
     const payload = {
-        appKey: sdkKey,           // تم استخدام appKey للإصدارات الحديثة
-        sdkKey: sdkKey,           // الاحتفاظ بـ sdkKey كدعم إضافي للنسخ القديمة
+        appKey: sdkKey,           
+        sdkKey: sdkKey,           
         mn: cleanMeetingNumber,   
         role: parseInt(role, 10) === 1 ? 1 : 0, // 1 للمضيف، 0 للمشارك
         iat: iat,
@@ -98,7 +96,7 @@ app.post('/api/generate-signature', (req, res) => {
 
         res.status(200).json({
             signature: signature,
-            sdkKey: process.env.ZOOM_CLIENT_ID || process.env.ZOOM_SDK_KEY,
+            sdkKey: process.env.ZOOM_SDK_KEY,
             meetingNumber: String(meetingNumber).replace(/\D/g, '')
         });
     } catch (error) {
@@ -110,8 +108,7 @@ app.post('/api/generate-signature', (req, res) => {
 // ------------------- 2. إنشاء اجتماع جديد -------------------
 app.post('/api/create-meeting', async (req, res) => {
     try {
-        const { topic, start_time, duration, classId, teacherId } = req.body;
-
+        const { topic, start_time, duration } = req.body;
         const accessToken = await getZoomAccessToken();
 
         const response = await axios.post(
@@ -155,7 +152,7 @@ app.post('/api/create-meeting', async (req, res) => {
 
         res.status(200).json({
             ...meetingData,
-            sdkKey: process.env.ZOOM_CLIENT_ID || process.env.ZOOM_SDK_KEY || '',
+            sdkKey: process.env.ZOOM_SDK_KEY || '',
             meetingNumber: String(meetingData.id || '').replace(/\D/g, '')
         });
 
@@ -167,7 +164,7 @@ app.post('/api/create-meeting', async (req, res) => {
     }
 });
 
-// ------------------- 3. جلب قائمة الاجتماعات (اختياري) -------------------
+// ------------------- 3. جلب قائمة الاجتماعات -------------------
 app.get('/api/get-meetings', async (req, res) => {
     try {
         const accessToken = await getZoomAccessToken();
