@@ -68,16 +68,16 @@ function generateZoomSignature(meetingNumber, role = 0) {
         throw new Error('Invalid meeting number');
     }
 
+    // طرح 30 ثانية لتلافي مشاكل الفروقات البسيطة في توقيت الخوادم (Clock Skew)
     const iat = Math.round(Date.now() / 1000) - 30;
     const exp = iat + 60 * 60 * 2; // صلاحية ساعتين
 
-    // ✅ هيكل Payload المطلوب في Zoom SDK v4.0+
+    // ✅ هيكل Payload المحدث لمنع خطأ Signature is invalid (3712)
     const payload = {
-        sdkKey: sdkKey,           
-        appKey: sdkKey,           
+        appKey: sdkKey,           // تم استخدام appKey للإصدارات الحديثة
+        sdkKey: sdkKey,           // الاحتفاظ بـ sdkKey كدعم إضافي للنسخ القديمة
         mn: cleanMeetingNumber,   
-        // ✅ تم تصحيح الأدوار: 1 = مضيف (المعلم), 0 = مشارك (الطالب)
-        role: parseInt(role, 10) === 1 ? 1 : 0, 
+        role: parseInt(role, 10) === 1 ? 1 : 0, // 1 للمضيف، 0 للمشارك
         iat: iat,
         exp: exp,
         tokenExp: exp             
@@ -152,8 +152,6 @@ app.post('/api/create-meeting', async (req, res) => {
         );
 
         const meetingData = response.data;
-
-        // ✅ تم إزالة توليد التوقيع من هنا (سيتم توليده في المتصفح لحظة الانضمام)
 
         res.status(200).json({
             ...meetingData,
