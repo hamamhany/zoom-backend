@@ -54,12 +54,12 @@ async function getZoomAccessToken() {
     }
 }
 
-// ------------------- دالة توليد التوقيع (موحدة) -------------------
+// ------------------- دالة توليد التوقيع (متوافقة مع Zoom SDK v4.0+) -------------------
 function generateZoomSignature(meetingNumber, role = 0) {
-    const clientId = process.env.ZOOM_CLIENT_ID || process.env.ZOOM_SDK_KEY;
-    const clientSecret = process.env.ZOOM_CLIENT_SECRET || process.env.ZOOM_SDK_SECRET;
+    const sdkKey = process.env.ZOOM_CLIENT_ID || process.env.ZOOM_SDK_KEY;
+    const sdkSecret = process.env.ZOOM_CLIENT_SECRET || process.env.ZOOM_SDK_SECRET;
 
-    if (!clientId || !clientSecret) {
+    if (!sdkKey || !sdkSecret) {
         throw new Error('Missing Zoom credentials for signature generation');
     }
 
@@ -68,22 +68,25 @@ function generateZoomSignature(meetingNumber, role = 0) {
         throw new Error('Invalid meeting number');
     }
 
-    const iat = Math.floor(Date.now() / 1000) - 30;
+    const iat = Math.round(Date.now() / 1000) - 30;
     const exp = iat + 60 * 60 * 2; // صلاحية ساعتين
 
-    const oHeader = { alg: 'HS256', typ: 'JWT' };
-    const oPayload = {
-        appKey: clientId,      // مطلوب في الإصدارات الجديدة من Zoom SDK
+    // ✅ هيكل Payload المطلوب في Zoom SDK v4.0+
+    const payload = {
+        sdkKey: sdkKey,           // المفتاح العام
+        appKey: sdkKey,           // ⚠️ هذا الحقل إجباري في الإصدار 4.0
+        mn: cleanMeetingNumber,   // رقم الاجتماع
+        role: role || 0,          // 0 = مضيف, 1 = مشارك
         iat: iat,
         exp: exp,
-        tokenExp: exp,
-        mn: cleanMeetingNumber,
-        role: role || 0        // 0 = مضيف, 1 = مشارك
+        tokenExp: exp             // ⚠️ حقل إجباري أيضاً
     };
 
-    const sHeader = JSON.stringify(oHeader);
-    const sPayload = JSON.stringify(oPayload);
-    return KJUR.jws.JWS.sign("HS256", sHeader, sPayload, clientSecret);
+    const header = { alg: 'HS256', typ: 'JWT' };
+    const sHeader = JSON.stringify(header);
+    const sPayload = JSON.stringify(payload);
+    
+    return KJUR.jws.JWS.sign("HS256", sHeader, sPayload, sdkSecret);
 }
 
 // ------------------- 1. توليد التوقيع فقط -------------------
@@ -108,15 +111,13 @@ app.post('/api/create-meeting', async (req, res) => {
     try {
         const { topic, start_time, duration, classId, teacherId } = req.body;
 
-        // الحصول على رمز المصادقة من Zoom
         const accessToken = await getZoomAccessToken();
 
-        // إنشاء الاجتماع
         const response = await axios.post(
             'https://api.zoom.us/v2/users/me/meetings',
             {
                 topic: topic || 'Read and Rise Meeting',
-                type: 2, // Scheduled meeting
+                type: 2,
                 start_time: start_time || new Date().toISOString(),
                 duration: duration || 30,
                 timezone: 'Asia/Amman',
@@ -151,17 +152,15 @@ app.post('/api/create-meeting', async (req, res) => {
 
         const meetingData = response.data;
 
-        // ✅ توليد التوقيع باستخدام الدالة الموحدة
+        // ✅ توليد التوقيع باستخدام الدالة الموحدة (مع role = 0 للمضيف)
         let signature = '';
         try {
-            signature = generateZoomSignature(meetingData.id, 0); // 0 = مضيف
+            signature = generateZoomSignature(meetingData.id, 0);
             console.log('✅ تم توليد التوقيع بنجاح');
         } catch (sigError) {
             console.error('❌ فشل توليد التوقيع:', sigError.message);
-            // نكمل بدون توقيع (سيظهر تحذير في الكود الأمامي)
         }
 
-        // ✅ إرجاع البيانات مع التوقيع
         res.status(200).json({
             ...meetingData,
             signature: signature,
@@ -194,7 +193,6 @@ app.get('/api/get-meetings', async (req, res) => {
             }
         );
 
-        // ✅ إضافة التوقيع لكل اجتماع إذا أردت
         const meetings = response.data.meetings.map(meeting => {
             let signature = '';
             try {
