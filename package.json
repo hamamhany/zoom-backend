@@ -1,7 +1,7 @@
 {
-  "name": "zoom-backend",
+  "name": "agora-backend",
   "version": "1.0.0",
-  "description": "Zoom Backend Service for Signature Generation",
+  "description": "Agora Backend Service for RTC Token Generation",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,6 +10,6 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "jsrsasign": "^11.1.0"
+    "agora-access-token": "^2.0.4"
   }
 }
